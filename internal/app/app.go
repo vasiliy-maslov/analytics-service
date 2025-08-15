@@ -2,6 +2,9 @@ package app
 
 import (
 	"analytics-service/internal/config"
+	"analytics-service/internal/repository/postgres"
+	"analytics-service/internal/service"
+	natsConsumer "analytics-service/internal/transport/nats"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -11,9 +14,10 @@ import (
 )
 
 type App struct {
-	db   *sql.DB
-	nats *nats.Conn
-	log  *slog.Logger
+	db       *sql.DB
+	nats     *nats.Conn
+	log      *slog.Logger
+	consumer *natsConsumer.Consumer
 }
 
 func New(log *slog.Logger, cfg *config.Config) (*App, error) {
@@ -34,15 +38,28 @@ func New(log *slog.Logger, cfg *config.Config) (*App, error) {
 	}
 	log.Info("Successfully connected to NATS")
 
+	clickRepo := postgres.NewClickRepository(db)
+	analyticsService := service.NewAnalyticsService(clickRepo)
+
+	consumer, err := natsConsumer.NewConsumer(natsConn, analyticsService, log.With(slog.String("component", "nats_consimer")))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create nats consumer: %w", err)
+	}
+
+
 	return &App{
 		db:   db,
 		nats: natsConn,
 		log:  log,
+		consumer: consumer,
 	}, nil
 }
 
 func (a *App) Run() {
-	fmt.Println("App starting...")
+	a.log.Info("Application starting...")
+	if err := a.consumer.Start(); err != nil {
+		a.log.Error("failed to start nats consumer", slog.Any("error", err))
+	}
 }
 
 func (a *App) Stop() {
